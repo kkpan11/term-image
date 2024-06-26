@@ -84,6 +84,8 @@ class RenderIterator:
           :py:attr:`~term_image.renderable.Renderable.frame_duration` does not affect
           the value yiedled by an iterator, the value when initializing the iterator
           is what it will use.
+        * :py:exc:`StopDefiniteIterationError` is raised when a renderable with
+          *definite* frame count raises :py:exc:`StopIteration` when rendering a frame.
 
     .. seealso::
 
@@ -334,9 +336,11 @@ class RenderIterator:
             frame = (
                 offset
                 if whence is Seek.START
-                else renderable_data.frame_offset + offset
-                if whence is Seek.CURRENT
-                else frame_count + offset - 1
+                else (
+                    renderable_data.frame_offset + offset
+                    if whence is Seek.CURRENT
+                    else frame_count + offset - 1
+                )
             )
             if not 0 <= frame < frame_count:
                 raise arg_value_error_range(
@@ -527,10 +531,13 @@ class RenderIterator:
         self._cached = (
             False
             if indefinite
-            else cache
-            # `isinstance` is much costlier on failure and `bool` cannot be subclassed
-            if type(cache) is bool
-            else renderable.frame_count <= cache  # type: ignore[operator]
+            else (
+                cache
+                # `isinstance` is much costlier on failure and `bool` cannot be
+                # subclassed
+                if type(cache) is bool
+                else renderable.frame_count <= cache  # type: ignore[operator]
+            )
         )
 
     def _iterate(
@@ -587,11 +594,14 @@ class RenderIterator:
                     # the render output of some renderables.
                     try:
                         frame = renderable._render_(render_data, self._render_args)
-                    except StopIteration:
-                        if not definite:
-                            self.loop = 0
-                            return
-                        raise
+                    except StopIteration as exc:
+                        if definite:
+                            raise StopDefiniteIterationError(
+                                f"{renderable!r} with definite frame count raised "
+                                "`StopIteration` when rendering a frame"
+                            ) from exc
+                        self.loop = 0
+                        return
 
                     if cache:
                         cache[frame_no] = (
@@ -636,4 +646,10 @@ class RenderIteratorError(TermImageError):
 
 
 class FinalizedIteratorError(RenderIteratorError):
-    """Raised if certain operations are attempted on a finalized iterator."""
+    """Raised when certain operations are attempted on a finalized iterator."""
+
+
+class StopDefiniteIterationError(RenderIteratorError):
+    """Raised when a renderable with *definite* frame count raises
+    :py:exc:`StopIteration` when rendering a frame.
+    """

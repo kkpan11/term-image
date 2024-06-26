@@ -33,7 +33,8 @@ from ._types import ArgsNamespace, DataNamespace, Frame, RenderArgs, RenderData
 
 try:
     import termios
-except ImportError:
+# Even if it's possible to simulate this in the tests, what's the point?
+except ImportError:  # pragma: no cover
     OS_IS_UNIX = False
 else:
     OS_IS_UNIX = True
@@ -41,6 +42,8 @@ else:
 T = TypeVar("T")
 RenderableMetaT = TypeVar("RenderableMetaT", bound="RenderableMeta")
 OptionalPaddingT = TypeVar("OptionalPaddingT", bound="Padding | None")
+
+NO_PADDING = ExactPadding()
 
 
 class RenderableMeta(ABCMeta):
@@ -590,7 +593,7 @@ been initialized
     def render(
         self,
         render_args: RenderArgs | None = None,
-        padding: Padding = ExactPadding(),
+        padding: Padding = NO_PADDING,
     ) -> Frame:
         """:term:`Renders` the current frame.
 
@@ -661,9 +664,11 @@ been initialized
         frame = (
             offset
             if whence is Seek.START
-            else self._frame + offset
-            if whence is Seek.CURRENT
-            else frame_count + offset - 1
+            else (
+                self._frame + offset
+                if whence is Seek.CURRENT
+                else frame_count + offset - 1
+            )
         )
         if not 0 <= frame < frame_count:
             raise arg_value_error_range(
@@ -733,13 +738,13 @@ been initialized
             False if loops == 1 else cache,
             finalize=False,
         )
-        cursor_to_bottom = cursor_down(height + pad_bottom - 1)
         cursor_to_next_render_line = f"\n{cursor_forward(pad_left)}"
         cursor_to_render_top_left = (
             f"\r{cursor_up(height - 1)}{cursor_forward(pad_left)}"
         )
         write = output.write
         flush = output.flush
+        first_frame_written = False
 
         try:
             # first frame
@@ -755,14 +760,18 @@ been initialized
                 self._handle_interrupted_draw_(render_data, render_args, output)
                 return
             else:
+                # Move the cursor to the top-left cell of the region occupied by the
+                # render output
                 write(
                     f"\r{cursor_up(height + pad_bottom - 1)}{cursor_forward(pad_left)}"
                 )
                 flush()
 
+            first_frame_written = True
+
             # Padding has been drawn with the first frame, only the actual render is
             # needed henceforth.
-            render_iter.set_padding(ExactPadding())
+            render_iter.set_padding(NO_PADDING)
 
             # render next frame during previous frame's duration
             duration_ms = frame.duration
@@ -771,8 +780,7 @@ been initialized
             for frame in render_iter:  # Render next frame
                 # left-over of previous frame's duration
                 sleep(
-                    max(0, duration_ms * 10**6 - (perf_counter_ns() - start_ns))
-                    / 10**9
+                    max(0, duration_ms * 10**6 - (perf_counter_ns() - start_ns)) / 10**9
                 )
 
                 # clear previous frame, if necessary
@@ -794,17 +802,15 @@ been initialized
                 duration_ms = frame.duration
 
             # left-over of last frame's duration
-            sleep(
-                max(0, duration_ms * 10**6 - (perf_counter_ns() - start_ns)) / 10**9
-            )
+            sleep(max(0, duration_ms * 10**6 - (perf_counter_ns() - start_ns)) / 10**9)
         except KeyboardInterrupt:
             pass
         finally:
             render_iter.close()
-            # Move the cursor to the last line to prevent "overlaid" output in a
-            # terminal
-            write(cursor_to_bottom)
-            flush()
+            if first_frame_written:
+                # Move the cursor to the last line to prevent "overlaid" output
+                write(cursor_down(height + pad_bottom - 1))
+                flush()
 
     def _clear_frame_(
         self,
@@ -1009,8 +1015,7 @@ been initialized
         finalize: bool = True,
         check_size: bool = False,
         allow_scroll: bool = False,
-    ) -> tuple[T, None]:
-        ...
+    ) -> tuple[T, None]: ...
 
     # both *render_args* and *padding*
     @overload
@@ -1024,8 +1029,7 @@ been initialized
         finalize: bool = True,
         check_size: bool = False,
         allow_scroll: bool = False,
-    ) -> tuple[T, OptionalPaddingT]:
-        ...
+    ) -> tuple[T, OptionalPaddingT]: ...
 
     # *padding*, no *render_args*
     @overload
@@ -1038,8 +1042,7 @@ been initialized
         finalize: bool = True,
         check_size: bool = False,
         allow_scroll: bool = False,
-    ) -> tuple[T, OptionalPaddingT]:
-        ...
+    ) -> tuple[T, OptionalPaddingT]: ...
 
     def _init_render_(
         self,
